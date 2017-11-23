@@ -15,7 +15,7 @@
 <p>Running DNS-Shell is relatively simple</p>
 <p>DNS-Shell supports two mode of operations direct and recursive modes:
 <ul>
-<li>Perform a git clone from our DNS-shell <a href="https://github.com/sensepost/DNS-Shell">Github page</a></li>
+<li>Perform a git clone from our DNS-shell <a href="https://github.com/RusPower/DNS-Shell">Github page</a></li>
 <li>DNS-Shell direct mode: sudo python DNS-Shell.py -l -d [Server IP]</li>
 <li>DNS-Shell recursive mode: sudo python DNS-Shell.py -l -r [Domain]</li>
 </ul>
